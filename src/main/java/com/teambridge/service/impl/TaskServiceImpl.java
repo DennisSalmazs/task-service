@@ -1,6 +1,10 @@
 package com.teambridge.service.impl;
 
+import com.teambridge.client.ProjectClient;
+import com.teambridge.client.UserClient;
+import com.teambridge.dto.ProjectResponse;
 import com.teambridge.dto.TaskDTO;
+import com.teambridge.dto.UserResponse;
 import com.teambridge.entity.Task;
 import com.teambridge.enums.Status;
 import com.teambridge.exception.*;
@@ -8,6 +12,7 @@ import com.teambridge.repository.TaskRepository;
 import com.teambridge.service.KeycloakService;
 import com.teambridge.service.TaskService;
 import com.teambridge.util.MapperUtil;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
@@ -21,11 +26,15 @@ public class TaskServiceImpl implements TaskService {
     private final TaskRepository taskRepository;
     private final MapperUtil mapperUtil;
     private final KeycloakService keycloakService;
+    private final ProjectClient projectClient;
+    private final UserClient userClient;
 
-    public TaskServiceImpl(TaskRepository taskRepository, MapperUtil mapperUtil, KeycloakService keycloakService) {
+    public TaskServiceImpl(TaskRepository taskRepository, MapperUtil mapperUtil, KeycloakService keycloakService, ProjectClient projectClient, UserClient userClient) {
         this.taskRepository = taskRepository;
         this.mapperUtil = mapperUtil;
         this.keycloakService = keycloakService;
+        this.projectClient = projectClient;
+        this.userClient = userClient;
     }
 
     @Override
@@ -196,16 +205,30 @@ public class TaskServiceImpl implements TaskService {
 
     }
 
+    // before creating any task to link with project, check if that project exists, in project-service
     private void checkProjectExists(String projectCode) {
-
-        //TODO Check if project exists or not by asking about it to project-service
-
+        ResponseEntity<ProjectResponse> response = projectClient.checkByProjectCode(projectCode);
+        if (!Objects.requireNonNull(response.getBody()).isSuccess()) {
+            throw new ProjectCheckFailedException("Check project is failed.");
+        }
+        if (!Objects.requireNonNull(response.getBody()).getData().equals(true)) {
+            throw new ProjectNotFoundException("Project does not exist.");
+        }
     }
 
+    // before creating a task for an employee, check if that employee exists, in user-service
     private void checkEmployeeExists(String assignedEmployee) {
+        ResponseEntity<UserResponse> response = userClient.checkByUsername(assignedEmployee);
+        if (!Objects.requireNonNull(response.getBody()).isSuccess()) {
+            throw new EmployeeCheckFailedException("Employee check is failed.");
+        }
+        if (!Objects.requireNonNull(response.getBody()).getData().equals(true)) {
+            throw new EmployeeNotFoundException("Employee does not exist.");
+        }
 
-        //TODO Check if employee exists or not by asking about it to user-service
-
+        if (!keycloakService.hasClientRole(assignedEmployee, "Employee")) {
+            throw new UserNotEmployeeException("User is not an employee.");
+        }
     }
 
     private void checkAccess(Task task) {
@@ -222,11 +245,18 @@ public class TaskServiceImpl implements TaskService {
 
     }
 
+    // Manager can create task only for the projects assigned to himself, not to other managers
+    // check if logged-in manager user is same with manager of the project, so that manager can create new tasks, in project-service
     private void checkCreateAccessToTaskProject(String loggedInUserUsername, String projectCode) {
-
-        //TODO Check if logged in user has access to the project of the task to create tasks for that project
-        //     by asking about it to project-service
-
+        ResponseEntity<ProjectResponse> response = projectClient.getManagerByProjectCode(projectCode);
+        if (Objects.requireNonNull(response.getBody()).isSuccess()) {
+            String taskProjectManager = (String) response.getBody().getData();
+            if (!loggedInUserUsername.equals(taskProjectManager)) {
+                throw new ProjectAccessDeniedException("Access is denied, make sure that you are working on your own project");
+            }
+        } else {
+            throw new ManagerNotRetrievedException("Manager is not retrieved.");
+        }
     }
 
     private void checkManagerAccessToTaskProject(String loggedInUserUsername, Task task) {
